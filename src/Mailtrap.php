@@ -4,6 +4,8 @@ namespace Codeception\Module;
 
 use Codeception\Module;
 use GuzzleHttp\Client;
+use GuzzleHttp\Psr7\Stream;
+use PHPUnit\Framework\Assert;
 
 /**
  * This module allows you to test emails using Mailtrap <https://mailtrap.io>.
@@ -23,6 +25,7 @@ use GuzzleHttp\Client;
  *
  * * client_id: `string`, default `` - Your mailtrap API key.
  * * inbox_id: `string`, default `` - The inbox ID to use for the tests
+ * * cleanup: `boolean`, default `true` - Clean the inbox after each scenario
  *
  * ## API
  *
@@ -59,7 +62,7 @@ class Mailtrap extends Module
     {
         $this->client = new Client([
             'base_uri' => $this->baseUrl,
-            'headers'  => [
+            'headers' => [
                 'Api-Token' => $this->config['client_id'],
             ],
         ]);
@@ -99,7 +102,7 @@ class Mailtrap extends Module
         $message = $this->fetchLastMessage();
 
         foreach ($params as $param => $value) {
-            $this->assertEquals($value, $message[$param]);
+            $this->assertEquals($value, $message->{$param});
         }
     }
 
@@ -108,14 +111,55 @@ class Mailtrap extends Module
      *
      * @return array
      */
-    public function fetchLastMessage()
+    public function fetchMessages()
     {
         $messages = $this->client->get("inboxes/{$this->config['inbox_id']}/messages")->getBody();
+
+        if ($messages instanceof Stream) {
+            $messages = $messages->getContents();
+        }
+
         $messages = json_decode($messages, true);
+
+        foreach ($messages as $key => $message) {
+            $messages[$key] = new MailtrapMessage($message, $this->client);
+        }
+
+        return $messages;
+    }
+
+    /**
+     * Get the most recent messages of the default inbox.
+     *
+     * @param int $number
+     *
+     * @return array
+     */
+    public function fetchLastMessages($number = 1)
+    {
+        $messages = $this->fetchMessages();
+
+        $firstIndex = count($messages) - $number;
+
+        $messages = array_slice($messages, $firstIndex, $number);
+
+        $this->assertCount($number, $messages);
+
+        return $messages;
+    }
+
+    /**
+     * Get the most recent message of the default inbox.
+     *
+     * @return MailtrapMessage
+     */
+    public function fetchLastMessage()
+    {
+        $messages = $this->fetchMessages();
 
         return array_shift($messages);
     }
-    
+
     /**
      * Gets the attachments on the last message.
      *
@@ -123,8 +167,8 @@ class Mailtrap extends Module
      */
     public function fetchAttachmentsOfLastMessage()
     {
-        $email    = $this->fetchLastMessage();
-        $response = $this->client->get("inboxes/{$this->config['inbox_id']}/messages/{$email['id']}/attachments")->getBody();
+        $email = $this->fetchLastMessage();
+        $response = $this->client->get("inboxes/{$this->config['inbox_id']}/messages/{$email->id}/attachments")->getBody();
 
         return json_decode($response, true);
     }
@@ -139,7 +183,7 @@ class Mailtrap extends Module
     public function receiveAnEmailFromEmail($senderEmail)
     {
         $message = $this->fetchLastMessage();
-        $this->assertEquals($senderEmail, $message['from_email']);
+        $this->assertEquals($senderEmail, $message->from_email);
     }
 
     /**
@@ -152,7 +196,7 @@ class Mailtrap extends Module
     public function receiveAnEmailFromName($senderName)
     {
         $message = $this->fetchLastMessage();
-        $this->assertEquals($senderName, $message['from_name']);
+        $this->assertEquals($senderName, $message->from_name);
     }
 
     /**
@@ -165,7 +209,7 @@ class Mailtrap extends Module
     public function receiveAnEmailToEmail($recipientEmail)
     {
         $message = $this->fetchLastMessage();
-        $this->assertEquals($recipientEmail, $message['to_email']);
+        $this->assertEquals($recipientEmail, $message->to_email);
     }
 
     /**
@@ -178,7 +222,7 @@ class Mailtrap extends Module
     public function receiveAnEmailToName($recipientName)
     {
         $message = $this->fetchLastMessage();
-        $this->assertEquals($recipientName, $message['to_name']);
+        $this->assertEquals($recipientName, $message->to_name);
     }
 
     /**
@@ -191,7 +235,7 @@ class Mailtrap extends Module
     public function receiveAnEmailWithSubject($subject)
     {
         $message = $this->fetchLastMessage();
-        $this->assertEquals($subject, $message['subject']);
+        $this->assertEquals($subject, $message->subject);
     }
 
     /**
@@ -204,7 +248,7 @@ class Mailtrap extends Module
     public function receiveAnEmailWithTextBody($textBody)
     {
         $message = $this->fetchLastMessage();
-        $this->assertEquals($textBody, $message['text_body']);
+        $this->assertEquals($textBody, $message->text_body);
     }
 
     /**
@@ -217,7 +261,7 @@ class Mailtrap extends Module
     public function receiveAnEmailWithHtmlBody($htmlBody)
     {
         $message = $this->fetchLastMessage();
-        $this->assertEquals($htmlBody, $message['html_body']);
+        $this->assertEquals($htmlBody, $message->html_body);
     }
 
     /**
@@ -230,7 +274,7 @@ class Mailtrap extends Module
     public function seeInEmailTextBody($expected)
     {
         $email = $this->fetchLastMessage();
-        $this->assertContains($expected, $email['text_body'], 'Email body contains text');
+        $this->assertContains($expected, $email->text_body, 'Email body contains text');
     }
 
     /**
@@ -243,30 +287,176 @@ class Mailtrap extends Module
     public function seeInEmailHtmlBody($expected)
     {
         $email = $this->fetchLastMessage();
-        $this->assertContains($expected, $email['html_body'], 'Email body contains HTML');
+        $this->assertContains($expected, $email->html_body, 'Email body contains HTML');
     }
-    
-       /**
-     * Look for an attachment on the most recent email
+
+    /**
+     * Look for a string in the most recent email subject.
+     *
+     * @param string $expected
+     *
+     * @return mixed
+     */
+    public function seeInEmailSubject($expected)
+    {
+        $email = $this->fetchLastMessage();
+        $this->assertContains($expected, $email->subject, 'Email subject contains text');
+    }
+
+    /**
+     * Look for an attachment on the most recent email.
      *
      * @param $count
      */
     public function seeAttachments($count)
     {
         $attachments = $this->fetchAttachmentsOfLastMessage();
-
         $this->assertEquals($count, count($attachments));
     }
 
     /**
-     * Look for an attachment on the most recent email
+     * Look for an attachment on the most recent email.
      *
      * @param $bool
      */
     public function seeAnAttachment($bool)
     {
         $attachments = $this->fetchAttachmentsOfLastMessage();
-
         $this->assertEquals($bool, count($attachments) > 0);
+    }
+
+    /**
+     * Get the bcc property of a message
+     *
+     * @param int $messageId
+     *
+     * @return string
+     */
+    public function getBccEmailOfMessage($messageId)
+    {
+        $message = $this->client->get("inboxes/{$this->config['inbox_id']}/messages/$messageId/body.eml")->getBody();
+
+        if ($message instanceof Stream) {
+            $message = $message->getContents();
+        }
+        $matches = [];
+        preg_match('/Bcc:\s[\w.-]+@[\w.-]+\.[a-z]{2,6}/', $message, $matches);
+
+        $bcc = substr(array_shift($matches), 5);
+
+        return $bcc;
+    }
+
+    /**
+     *
+     * @param int $timeout_in_second
+     * @param int $interval_in_millisecond
+     *
+     * @return MailtrapWait
+     */
+    protected function wait($timeout_in_second = 30, $interval_in_millisecond = 250)
+    {
+        return new MailtrapWait($this, $timeout_in_second, $interval_in_millisecond);
+    }
+
+    /**
+     * Wait until an email to be received.
+     *
+     * @param int $timeout
+     *
+     * @throws \Exception
+     */
+    public function waitForEmail($timeout = 5)
+    {
+        $condition = function () {
+            return !empty($this->fetchLastMessage());
+        };
+
+        $message = sprintf('Waited for %d secs but no email has arrived', $timeout);
+
+        $this->wait($timeout)->until($condition, $message);
+    }
+
+    /**
+     * Wait until an email has been received with specific text in the text body.
+     *
+     * @param string $subject
+     * @param int $timeout
+     *
+     * @throws \Exception
+     */
+    public function waitForEmailWithSubject($subject, $timeout = 5)
+    {
+        $condition = function () use ($subject) {
+            $emails = $this->fetchMessages();
+            foreach ($emails as $email) {
+                $constraint = Assert::equalTo($subject);
+                if ($constraint->evaluate($email->subject, '', true)) {
+                    return true;
+                }
+            }
+
+            return false;
+        };
+
+        $message = sprintf('Waited for %d secs but no email with the subject of %s has arrived', $timeout, $subject);
+
+        $this->wait($timeout)->until($condition, $message);
+    }
+
+    /**
+     * Wait until an email has been received with specific text in the text body.
+     *
+     * @param string $text
+     * @param int $timeout
+     *
+     * @throws \Exception
+     */
+    public function waitForEmailWithTextInTextBody($text, $timeout = 5)
+    {
+        $condition = function () use ($text) {
+            $emails = $this->fetchMessages();
+            foreach ($emails as $email) {
+                $constraint = Assert::stringContains($text);
+                if ($constraint->evaluate($email->text_body, '', true)) {
+                    return true;
+                }
+            }
+
+            return false;
+        };
+
+        $message = sprintf('Waited for %d secs but no email with the text body containing %s has arrived', $timeout,
+            $text);
+
+        $this->wait($timeout)->until($condition, $message);
+    }
+
+    /**
+     * Wait until an email has been received with specific text in the text body.
+     *
+     * @param string $text
+     * @param int $timeout
+     *
+     * @throws \Exception
+     */
+    public function waitForEmailWithTextInHTMLBody($text, $timeout = 5)
+    {
+        $condition = function () use ($text) {
+            $emails = $this->fetchMessages();
+            foreach ($emails as $email) {
+                $constraint = Assert::stringContains($text);
+                if ($constraint->evaluate($email->html_body, '', true)) {
+                    return true;
+                }
+            }
+
+            return false;
+        };
+
+        $message = sprintf('Waited for %d secs but no email with the html body containing %s has arrived', $timeout,
+            $text);
+
+        $this->wait($timeout)->until($condition, $message);
     }
 }
